@@ -115,13 +115,16 @@ export function generate(i: Input): Output {
 
   else if (gc === "ZGC-Gen" || gc === "ZGC") {
     flags.push("-XX:+UseZGC");
-    // ZGenerational was opt-in in Java 21–23, became the default in 24, and
-    // is the only mode from 25 onward (the legacy single-gen ZGC was removed).
-    // For 21–23 we explicitly enable it; for 24+ we skip the flag since it's
-    // the default (and on 25 it would emit a deprecation/error notice).
-    if (gc === "ZGC-Gen" && i.javaVer < 24) flags.push("-XX:+ZGenerational");
+    // ZGC timeline (verified against Oracle migrate docs):
+    //   JDK 21 — JEP 439: generational ZGC opt-in via -XX:+ZGenerational
+    //   JDK 23 — JEP 474: generational becomes DEFAULT; non-gen deprecated
+    //   JDK 24 — JEP 490: non-generational mode REMOVED entirely
+    // So we only emit the flag on 21 + 22 (where it's opt-in); on 23+ it's
+    // redundant, and on 24+ it's a harmless legacy alias.
+    if (gc === "ZGC-Gen" && i.javaVer >= 21 && i.javaVer < 23) {
+      flags.push("-XX:+ZGenerational");
+    }
     flags.push(
-      "-XX:+UnlockExperimentalVMOptions",
       "-XX:ZAllocationSpikeTolerance=5",
       "-XX:-ZUncommit", // keep memory mapped, no return-to-OS oscillation
       "-XX:+AlwaysPreTouch",
@@ -129,17 +132,33 @@ export function generate(i: Input): Output {
       "-XX:+ParallelRefProcEnabled",
     );
     if (xl) flags.push("-XX:ZCollectionInterval=120");
-    if (i.javaVer >= 25 && heap >= 8192) {
-      // JEP 519 (Compact Object Headers) GA in Java 25 — 8B header save per object
-      flags.push("-XX:+UseCompactObjectHeaders");
-      notes.push("Java 25 GA: compact object headers (-XX:+UseCompactObjectHeaders) save ~8 bytes per object. Material on heaps full of short-lived entities.");
+
+    // Compact Object Headers (JEP 450 experimental in JDK 24, JEP 519 Product
+    // in JDK 25). Disabled by default in both — explicit opt-in always required.
+    // JDK 24 also requires -XX:+UnlockExperimentalVMOptions before the flag.
+    if (heap >= 8192) {
+      if (i.javaVer >= 25) {
+        flags.push("-XX:+UseCompactObjectHeaders");
+        notes.push("JEP 519 (JDK 25 Product): -XX:+UseCompactObjectHeaders shrinks the object header from 96-128 bits to 64 bits — ~4 bytes saved per object on average. Real RAM win on entity-heavy modpacks.");
+      } else if (i.javaVer === 24) {
+        flags.push("-XX:+UnlockExperimentalVMOptions", "-XX:+UseCompactObjectHeaders");
+        notes.push("JEP 450 (JDK 24 experimental): -XX:+UseCompactObjectHeaders ~4 bytes saved per object on average. Promoted to Product (JEP 519) in JDK 25.");
+      }
+    } else if (i.javaVer >= 24) {
+      // ZAllocationSpikeTolerance lives in ExperimentalVMOptions on some builds
+      flags.push("-XX:+UnlockExperimentalVMOptions");
+    } else {
+      flags.push("-XX:+UnlockExperimentalVMOptions");
     }
+
     notes.push(
       i.javaVer >= 24
-        ? "Generational ZGC is the default in Java 24+ — no flag needed."
+        ? "Generational ZGC: only mode available since JDK 24 (JEP 490 removed the non-generational variant). No flag needed."
+        : i.javaVer === 23
+        ? "Generational ZGC: default in JDK 23 (JEP 474). Non-gen deprecated; still selectable but slated for removal in 24."
         : gc === "ZGC-Gen"
-        ? "Generational ZGC opt-in for Java 21–23. Sub-ms pauses even at 64GB+."
-        : "Single-gen ZGC. Upgrade to Java 21+ for the generational variant — much better throughput.",
+        ? "Generational ZGC: opt-in for JDK 21–22 via -XX:+ZGenerational (JEP 439). Sub-ms pauses even at 64 GB+."
+        : "Single-gen ZGC. Upgrade to JDK 21+ for the generational variant — much better throughput.",
     );
   }
 
@@ -152,9 +171,9 @@ export function generate(i: Input): Output {
       "-XX:+DisableExplicitGC",
       "-XX:+ParallelRefProcEnabled",
     );
-    notes.push("Shenandoah generational mode = predictable sub-10ms pauses up to ~64GB.");
+    notes.push("Shenandoah generational mode: predictable sub-10ms pauses up to ~64 GB. Production-readiness varies per OpenJDK build — confirm with your runtime if uncertain.");
     if (i.vendor !== "adoptium" && i.vendor !== "liberica") {
-      warnings.push("Shenandoah needs an OpenJDK build that includes it (Adoptium/Liberica). Some Oracle-derived builds don't ship it.");
+      warnings.push("Shenandoah needs an OpenJDK build that ships it (Adoptium Temurin and BellSoft Liberica do; some Oracle-derived builds don't).");
     }
   }
 
@@ -197,16 +216,17 @@ export function generate(i: Input): Output {
     );
     notes.push("UseTransparentHugePages cuts TLB misses on workloads >4GB. Linux only; harmless on Win/macOS.");
   }
-  // Compact object headers on Java 25 LTS — G1/Shenandoah also benefit
-  if (i.javaVer >= 25 && heap >= 8192 && (gc === "G1" || gc === "Shenandoah")) {
-    flags.push("-XX:+UseCompactObjectHeaders");
-    notes.push("JEP 519: compact object headers (Java 25 GA). 8 bytes saved per object — real win on entity-heavy modpacks.");
-  }
-  // Java 24+ adaptive heap sizing (AHS) — Project Lilliput follow-up.
-  // Can let the JVM shrink/grow within Xms..Xmx; harmless to leave default,
-  // but on JVMs that ship it (24+) we surface a hint.
-  if (i.javaVer >= 24 && (gc === "G1" || gc === "ZGC" || gc === "ZGC-Gen")) {
-    notes.push("Java 24+ ships adaptive heap sizing (AHS). The Xms = Xmx pattern still wins for latency-sensitive servers (no resize jitter), but AHS is fine if you set Xms lower.");
+  // Compact object headers — G1 and Shenandoah benefit too. We already emit
+  // them for ZGC above; here we handle the non-ZGC collectors and don't
+  // double-emit.
+  if (heap >= 8192 && (gc === "G1" || gc === "Shenandoah")) {
+    if (i.javaVer >= 25) {
+      flags.push("-XX:+UseCompactObjectHeaders");
+      notes.push("JEP 519 (JDK 25 Product): compact object headers shrink the object header (96-128b → 64b) — ~4 bytes saved per object on average. Works with G1, ZGC, Shenandoah and Parallel.");
+    } else if (i.javaVer === 24) {
+      flags.push("-XX:+UnlockExperimentalVMOptions", "-XX:+UseCompactObjectHeaders");
+      notes.push("JEP 450 (JDK 24 experimental): compact object headers ~4 bytes saved per object on average. Promoted to Product in JDK 25.");
+    }
   }
 
   // Tune GC parallelism for large CPU counts (Ryzen 9 / Threadripper / Epyc)
