@@ -29,11 +29,26 @@ const VENDORS: { id: Vendor; label: string; note: string }[] = [
   { id: "sapmachine", label: "SAP Machine",       note: "Enterprise" },
 ];
 
+// Real Mojang release versions (piston-meta version_manifest_v2).
+// Mojang switched to year-based versioning in 2026 — after 1.21.11 comes 26.1.
 const MC_VERSIONS = [
-  "1.21.4", "1.21.3", "1.21.1", "1.20.6", "1.20.4", "1.20.1",
-  "1.19.4", "1.19.2", "1.18.2", "1.17.1", "1.16.5", "1.12.2",
+  // Year-based (Java 25 baseline)
+  "26.2", "26.1",
+  // 1.21.x line — Java 21 baseline
+  "1.21.11", "1.21.10", "1.21.9", "1.21.8", "1.21.7", "1.21.6",
+  "1.21.5", "1.21.4", "1.21.3", "1.21.2", "1.21.1", "1.21",
+  // 1.20.x — Java 17 (up to 1.20.4) or Java 21 (1.20.5+)
+  "1.20.6", "1.20.5", "1.20.4", "1.20.2", "1.20.1",
+  // Legacy
+  "1.19.4", "1.19.2",
+  "1.18.2",
+  "1.17.1",
+  "1.16.5",
+  "1.12.2",
+  "1.8.9",
 ];
 
+// Java 25 is the current LTS (Sept 2025). Order matters — 25 first = default.
 const JAVA_VERSIONS = [25, 24, 23, 21, 17, 11, 8];
 
 const CPU_TIERS: { id: CpuTier; label: string; sub: string }[] = [
@@ -54,12 +69,12 @@ const GC_OPTIONS: { id: GcChoice; label: string }[] = [
 export function Generator() {
   const [serverType, setServerType] = useState<ServerType>("paper");
   const [memMB, setMemMB]   = useState(4096);
-  const [javaVer, setJava]  = useState(21);
+  const [javaVer, setJava]  = useState(25);                 // current LTS
   const [vendor, setVendor] = useState<Vendor>("adoptium");
   const [cpuTier, setCpuTier] = useState<CpuTier>("consumer");
   const [cpuVendor, setCpuVendor] = useState<CpuVendor>("amd");
   const [cores, setCores]    = useState(16);
-  const [mcVersion, setMc]   = useState("1.21.4");
+  const [mcVersion, setMc]   = useState("26.2");            // current Mojang release
   const [gc, setGc]          = useState<GcChoice>("auto");
   const [jarFile, setJarFile] = useState("paper.jar");
   const [tab, setTab] = useState<"startup" | "egg" | "docker" | "compose" | "systemd">("startup");
@@ -126,10 +141,18 @@ export function Generator() {
           ))}
         </select>
 
-        <SectionLabel className="mt-5">Java version</SectionLabel>
+        <SectionLabel className="mt-5">Java version <span className="text-dim/70 normal-case font-normal">(25 = LTS)</span></SectionLabel>
         <ChipRow>
           {JAVA_VERSIONS.map((v) => (
-            <Chip key={v} on={javaVer === v} onClick={() => setJava(v)}>
+            <Chip key={v} on={javaVer === v} onClick={() => setJava(v)} title={
+              v === 25 ? "LTS — required by MC 26.x. Compact object headers GA, ZGC-Gen only." :
+              v === 24 ? "non-LTS — ZGC generational became the default here." :
+              v === 23 ? "non-LTS" :
+              v === 21 ? "LTS — required by MC 1.20.5 – 1.21.11. ZGC-Gen opt-in." :
+              v === 17 ? "LTS — required by MC 1.18 – 1.20.4." :
+              v === 11 ? "LTS — required by MC 1.17." :
+              v === 8  ? "LTS — legacy MC 1.16 and older." : undefined
+            }>
               {v}
             </Chip>
           ))}

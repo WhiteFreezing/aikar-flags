@@ -30,16 +30,33 @@ export interface Output {
   warnings: string[];
 }
 
-/** Java version required by Minecraft version, for the warning banner. */
+/** Java version required by Minecraft version (verified against Mojang's
+ *  piston-meta `javaVersion.majorVersion` field).
+ *
+ *  Mojang's baseline bumps:
+ *    1.18      → Java 17
+ *    1.20.5    → Java 21
+ *    26.1      → Java 25  (year-based versioning started here)
+ *
+ *  After 1.21.11 (mid-2025), Mojang switched to year-based versioning:
+ *  26.1, 26.2, … — these read as "first 2026 release", "second 2026 release".
+ *  No leading "1." prefix. */
 export function requiredJava(mc: string): number {
-  if (!mc) return 21;
-  const [maj, min = "0"] = mc.split(".");
-  const v = parseInt(maj, 10) * 100 + parseInt(min, 10);
-  // 1.20.5+, 1.21.x → Java 21 required
-  if (v >= 121) return 21;
-  if (mc.startsWith("1.20") && parseInt(mc.split(".")[2] || "0", 10) >= 5) return 21;
-  if (v >= 118) return 17; // 1.18 – 1.20.4
-  if (v >= 117) return 16; // 1.17 needed 16, 17 works
+  if (!mc) return 25;
+
+  // Year-based (2026+) — Mojang bumped the JVM baseline to Java 25.
+  // Year prefix is any 2-digit number ≥ 26 (i.e. release year mod 100).
+  const yearMatch = /^(\d{2})\.\d+/.exec(mc);
+  if (yearMatch && parseInt(yearMatch[1], 10) >= 26) return 25;
+
+  // Legacy 1.x.y line
+  if (mc.startsWith("1.21")) return 21;
+  if (mc.startsWith("1.20")) {
+    const patch = parseInt(mc.split(".")[2] || "0", 10);
+    return patch >= 5 ? 21 : 17;
+  }
+  if (mc.startsWith("1.19") || mc.startsWith("1.18")) return 17;
+  if (mc.startsWith("1.17")) return 16;
   return 8;
 }
 
@@ -97,9 +114,14 @@ export function generate(i: Input): Output {
   }
 
   else if (gc === "ZGC-Gen" || gc === "ZGC") {
-    flags.push("-XX:+UnlockExperimentalVMOptions", "-XX:+UseZGC");
-    if (gc === "ZGC-Gen") flags.push("-XX:+ZGenerational");
+    flags.push("-XX:+UseZGC");
+    // ZGenerational was opt-in in Java 21–23, became the default in 24, and
+    // is the only mode from 25 onward (the legacy single-gen ZGC was removed).
+    // For 21–23 we explicitly enable it; for 24+ we skip the flag since it's
+    // the default (and on 25 it would emit a deprecation/error notice).
+    if (gc === "ZGC-Gen" && i.javaVer < 24) flags.push("-XX:+ZGenerational");
     flags.push(
+      "-XX:+UnlockExperimentalVMOptions",
       "-XX:ZAllocationSpikeTolerance=5",
       "-XX:-ZUncommit", // keep memory mapped, no return-to-OS oscillation
       "-XX:+AlwaysPreTouch",
@@ -107,10 +129,17 @@ export function generate(i: Input): Output {
       "-XX:+ParallelRefProcEnabled",
     );
     if (xl) flags.push("-XX:ZCollectionInterval=120");
+    if (i.javaVer >= 25 && heap >= 8192) {
+      // JEP 519 (Compact Object Headers) GA in Java 25 — 8B header save per object
+      flags.push("-XX:+UseCompactObjectHeaders");
+      notes.push("Java 25 GA: compact object headers (-XX:+UseCompactObjectHeaders) save ~8 bytes per object. Material on heaps full of short-lived entities.");
+    }
     notes.push(
-      gc === "ZGC-Gen"
-        ? "Generational ZGC (Java 21+). Sub-ms pauses even at 64GB+."
-        : "Single-gen ZGC. Upgrade to Java 21 for the generational variant — much better throughput.",
+      i.javaVer >= 24
+        ? "Generational ZGC is the default in Java 24+ — no flag needed."
+        : gc === "ZGC-Gen"
+        ? "Generational ZGC opt-in for Java 21–23. Sub-ms pauses even at 64GB+."
+        : "Single-gen ZGC. Upgrade to Java 21+ for the generational variant — much better throughput.",
     );
   }
 
@@ -167,6 +196,17 @@ export function generate(i: Input): Output {
       "-XX:+UseStringDeduplication",
     );
     notes.push("UseTransparentHugePages cuts TLB misses on workloads >4GB. Linux only; harmless on Win/macOS.");
+  }
+  // Compact object headers on Java 25 LTS — G1/Shenandoah also benefit
+  if (i.javaVer >= 25 && heap >= 8192 && (gc === "G1" || gc === "Shenandoah")) {
+    flags.push("-XX:+UseCompactObjectHeaders");
+    notes.push("JEP 519: compact object headers (Java 25 GA). 8 bytes saved per object — real win on entity-heavy modpacks.");
+  }
+  // Java 24+ adaptive heap sizing (AHS) — Project Lilliput follow-up.
+  // Can let the JVM shrink/grow within Xms..Xmx; harmless to leave default,
+  // but on JVMs that ship it (24+) we surface a hint.
+  if (i.javaVer >= 24 && (gc === "G1" || gc === "ZGC" || gc === "ZGC-Gen")) {
+    notes.push("Java 24+ ships adaptive heap sizing (AHS). The Xms = Xmx pattern still wins for latency-sensitive servers (no resize jitter), but AHS is fine if you set Xms lower.");
   }
 
   // Tune GC parallelism for large CPU counts (Ryzen 9 / Threadripper / Epyc)

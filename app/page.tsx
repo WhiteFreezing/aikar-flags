@@ -33,7 +33,7 @@ function Header() {
           <p className="text-dim mt-3 max-w-2xl">
             Pick a server type, RAM and Java version. Get tuned JVM flags, a
             ready-to-import Pterodactyl egg, a docker run command and a systemd
-            unit — copy and ship.
+            unit — copy and ship. Up to date for <span className="text-brand font-semibold">Minecraft 26.2</span> + <span className="text-brand font-semibold">Java 25 LTS</span> (Mojang switched to year-based versioning in 2026 — after 1.21.11 came 26.1).
           </p>
         </div>
         <a
