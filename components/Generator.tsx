@@ -211,13 +211,15 @@ export function Generator() {
             <TabBtn id="compose"  cur={tab} setTab={setTab}>docker compose</TabBtn>
             <TabBtn id="systemd"  cur={tab} setTab={setTab}>systemd unit</TabBtn>
           </div>
-          <CodeBlock>
-            {tab === "startup" && out.startup}
-            {tab === "egg" && pterodactylEgg(input, out)}
-            {tab === "docker" && dockerRun(input, out)}
-            {tab === "compose" && dockerCompose(input, out)}
-            {tab === "systemd" && systemdUnit(input, out)}
-          </CodeBlock>
+          <CodeBlock
+            text={
+              tab === "startup" ? out.startup
+              : tab === "egg" ? pterodactylEgg(input, out)
+              : tab === "docker" ? dockerRun(input, out)
+              : tab === "compose" ? dockerCompose(input, out)
+              : systemdUnit(input, out)
+            }
+          />
         </div>
 
         {/* Notes */}
@@ -285,8 +287,7 @@ function TabBtn({ id, cur, setTab, children }: { id: any; cur: string; setTab: (
   );
 }
 
-function CodeBlock({ children }: { children: React.ReactNode }) {
-  const text = typeof children === "string" ? children : "";
+function CodeBlock({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="relative">
@@ -300,7 +301,7 @@ function CodeBlock({ children }: { children: React.ReactNode }) {
       >
         {copied ? "Copied" : "Copy"}
       </button>
-      <pre className="p-5 pr-24 text-sm overflow-x-auto whitespace-pre font-mono leading-relaxed bg-muted/40 max-h-[60vh] overflow-y-auto">
+      <pre className="p-5 pr-24 text-sm overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed bg-muted/40 max-h-[60vh] overflow-y-auto">
         {text}
       </pre>
     </div>
